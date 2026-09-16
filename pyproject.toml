@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools >= 64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-as-api"
+version = "0.1.0"
+description = "Call an LLM as a plain function, using a Claude Enterprise seat and no API key"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+  # Only openrouter.py needs httpx, but it is small and it keeps the default
+  # install able to reach any provider. No upper bound on purpose: the anthropic
+  # 1.x line moved to httpx 2, and a ~= pin here would make the `anthropic`
+  # extra unsolvable.
+  "httpx>=0.27",
+
+  # LLMConfig.from_env() loads .env before reading the environment.
+  "python-dotenv~=1.0",
+]
+
+[project.optional-dependencies]
+# Only needed for LLM_PROVIDER=anthropic, which requires a console.anthropic.com
+# API key. An Enterprise seat is not API access, so most users never need this.
+anthropic = ["anthropic>=1.0"]
+
+# map_dataframe() imports pandas only under TYPE_CHECKING, so the library does
+# not require it at runtime -- but you cannot call map_dataframe without it.
+pandas = ["pandas~=2.2"]
+
+[dependency-groups]
+dev = [
+  "ruff==0.7.2",
+  "pre-commit~=3.5",
+  "pytest~=7.4",
+  "pandas~=2.2",  # map_dataframe tests
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff.lint]
+extend-select = [
+  # by default, ruff enables all F and a subset of E rules
+  # for a description of rulesets and examples, see:
+  # https://docs.astral.sh/ruff/rules/
+  "ANN",    # flake8-annotations - type annotations, some ignored
+  "B",      # bugbear - identifies likely bugs
+  "C4",     # flake8-comprehensions - identifies redundant calls in comprehensions
+  "D",      # pydocstyle - requires docstrings on all public modules/functions/classes
+  "I",      # isort
+  "N801",   # pep8-naming - enforce ClassNamesStyle
+  "N804",   # pep8-naming - first arg of classmethod should be cls
+  "N805",   # pep8-naming - first arg of method should be self
+  "PD",     # pandas-vet
+  "PLR2004",# Pylint no magic values!
+  "PTH",    # prefer pathlib over os.path as seems to be the consensus
+  "Q",      # flake8-quotes - double quotes preferred (like black)
+  "S",      # flake8-bandit - security checks
+  "UP",     # pyupgrade - requires preferred syntax in newer python versions
+  "YTT",    # flake8-2020 - corrects code that doesn't anticipate 2 digit python minor version
+]
+
+ignore = [
+  "D415",   # allow first line of doctstrings to end without punctuation
+  "ANN002", # missing type on *args
+  "ANN003", # missing type on **kwargs
+  "ANN101", # missing type on self -- deprecated by ruff, removed in later versions
+  "ANN102", # missing type on cls -- deprecated by ruff, removed in later versions
+  "B905",   # won't work on python <3.10
+  "S101",   # allow assertions
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Assertions in tests compare against literal expected values, and test
+# fixtures contain dummy credentials. Both are the point, not a smell.
+"tests/**" = [
+  "PLR2004",  # magic value in comparison
+  "S105",     # hardcoded password string
+  "S106",     # hardcoded password argument
+  "SLF001",   # private member access -- tests may check internals
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.pytest.ini_options]
+python_files = "test_*.py"
+testpaths = ["tests"]
+pythonpath = ["src"]

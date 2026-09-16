@@ -1,0 +1,53 @@
+## -*- mode: gitignore; -*-
+
+## VSCode
+.vscode
+
+## Mac
+.DS_Store
+Desktop.ini
+._*
+Thumbs.db
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+
+# Unit test / coverage reports
+.cache
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.hypothesis/
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# uv
+uv.lock
+
+# pyenv
+.python-version
+
+# Scratch directory the claude_code backend runs the CLI in
+.llm_scratch/
