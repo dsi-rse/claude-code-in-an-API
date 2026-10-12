@@ -104,6 +104,7 @@ class LLMClient:
         effort: Effort | None = None,
         max_tokens: int | None = None,
         timeout_s: float | None = None,
+        images: Sequence[bytes] | None = None,
     ) -> LLMResponse:
         """Run one completion, retrying transient failures.
 
@@ -115,11 +116,16 @@ class LLMClient:
             effort: Reasoning depth override; defaults to the configured level.
             max_tokens: Output token ceiling override.
             timeout_s: Per-call timeout override.
+            images: PNG images to show the model with the prompt, or None.
+                Only backends with ``supports_images = True`` accept them
+                (currently ``claude_code``).
 
         Returns:
             The completion.
 
         Raises:
+            LLMUnsupportedError: If images are given and the backend cannot
+                take them.
             LLMError: Or a subclass, if every attempt fails.
         """
         resolved = {
@@ -131,6 +137,11 @@ class LLMClient:
             "max_tokens": max_tokens or self.config.max_tokens,
             "timeout_s": timeout_s or self.config.timeout_s,
         }
+        if images:
+            if not getattr(self.backend, "supports_images", False):
+                msg = f"the {self.backend.name!r} backend does not accept images"
+                raise LLMUnsupportedError(msg)
+            resolved["images"] = list(images)
 
         last: LLMError | None = None
         for attempt in range(max(1, self.config.max_retries)):

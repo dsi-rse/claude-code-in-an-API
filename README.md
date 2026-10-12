@@ -191,6 +191,28 @@ client = LLMClient(config=LLMConfig(provider="openrouter", effort="none"))
 `LLMConfig()` takes explicit values; `LLMConfig.from_env()` reads them from the
 environment and `.env`. A bare `LLMClient()` uses `from_env()`.
 
+### Images
+
+`complete(prompt, images=[png_bytes, ...])` shows the model one or more PNG
+images before the prompt. Only the `claude_code` backend accepts them; the
+others raise `LLMUnsupportedError` rather than silently dropping the images.
+The CLI takes images only through its `stream-json` input format, so a call
+with images uses `stream-json` for input and output; calls without images are
+unchanged.
+
+```python
+from pathlib import Path
+from claude_as_api import complete
+
+page = Path("page.png").read_bytes()
+response = complete("Transcribe the table on this page.", images=[page], schema=SCHEMA)
+```
+
+If your shell exports variables meant for a different Anthropic gateway (for
+example `ANTHROPIC_BASE_URL`), build the backend with
+`ClaudeCodeBackend(strip_env=["ANTHROPIC_BASE_URL"])` and pass it to
+`LLMClient(backend=...)` so the call uses your own login.
+
 ## 6. Configuration
 
 Every setting has an environment variable, read by `LLMConfig.from_env()`.

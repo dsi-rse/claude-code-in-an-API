@@ -16,6 +16,7 @@ from claude_as_api.core import (
     LLMRateLimitError,
     LLMResponse,
     LLMTransientError,
+    LLMUnsupportedError,
 )
 
 SCHEMA: dict[str, Any] = {
@@ -231,3 +232,41 @@ def test_map_dataframe_does_not_mutate_the_input() -> None:
         progress=False,
     )
     assert list(frame.columns) == ["desc"]
+
+
+def test_images_are_refused_by_a_text_only_backend() -> None:
+    """A backend without image support raises instead of dropping the images."""
+    client = _client(FakeBackend())
+    with pytest.raises(LLMUnsupportedError):
+        client.complete("describe this", images=[b"\x89PNG"])
+
+
+class ImageBackend(FakeBackend):
+    """A fake backend that accepts images and records them."""
+
+    supports_images = True
+
+    def generate(
+        self,
+        *,
+        images: list[bytes] | None = None,
+        **kwargs: Any,  # noqa: ANN401
+    ) -> LLMResponse:
+        """Record the images, then answer like :class:`FakeBackend`.
+
+        Args:
+            images: Recorded.
+            **kwargs: Passed to :meth:`FakeBackend.generate`.
+
+        Returns:
+            The canned response.
+        """
+        self.images = images
+        return super().generate(**kwargs)
+
+
+def test_images_reach_a_backend_that_supports_them() -> None:
+    """Images are passed through to backends that declare support."""
+    backend = ImageBackend()
+    _client(backend).complete("describe this", images=[b"\x89PNG"])
+    assert backend.images == [b"\x89PNG"]

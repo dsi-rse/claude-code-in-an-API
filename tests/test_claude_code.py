@@ -386,3 +386,95 @@ def test_explicit_scratch_dir_beats_the_environment(
     monkeypatch.setenv("LLM_SCRATCH_DIR", str(tmp_path / "ignored"))
     explicit = tmp_path / "chosen"
     assert ClaudeCodeBackend(scratch_dir=explicit)._scratch() == explicit.resolve()  # noqa: SLF001
+
+
+PNG_BYTES = b"\x89PNG\r\n\x1a\nfake"
+
+
+def _stream_run(recorder: dict[str, Any], payload: dict[str, Any]) -> Any:  # noqa: ANN401
+    """Build a fake ``subprocess.run`` that prints stream-json events.
+
+    Args:
+        recorder: Dict to write the observed call into.
+        payload: The final result event.
+
+    Returns:
+        A callable suitable for monkeypatching.
+    """
+
+    def _run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:  # noqa: ANN401
+        recorder["argv"] = argv
+        recorder.update(kwargs)
+        lines = [json.dumps({"type": "system", "subtype": "init"}), json.dumps(payload)]
+        return subprocess.CompletedProcess(argv, 0, stdout="\n".join(lines), stderr="")
+
+    return _run
+
+
+def test_images_switch_to_stream_json(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With images, input and output both use stream-json and the PNG is sent."""
+    recorder: dict[str, Any] = {}
+    monkeypatch.setattr(backend_module.subprocess, "run", _stream_run(recorder, CANNED))
+    response = backend.generate(
+        prompt="Transcribe the table.",
+        system=None,
+        model="sonnet",
+        schema=SCHEMA,
+        effort="low",
+        max_tokens=4096,
+        timeout_s=30.0,
+        images=[PNG_BYTES],
+    )
+    argv = recorder["argv"]
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert argv[argv.index("--tools") + 1] == ""
+    message = json.loads(recorder["input"])
+    image_block, text_block = message["message"]["content"]
+    assert image_block["source"]["media_type"] == "image/png"
+    assert text_block == {"type": "text", "text": "Transcribe the table."}
+    assert response.data == CANNED["structured_output"]
+
+
+def test_no_images_keeps_plain_json(backend: ClaudeCodeBackend) -> None:
+    """Text-only calls are unchanged: plain json output, no input format flag."""
+    argv = backend.build_argv(model="opus", effort="low", system=None, schema=None)
+    assert argv[argv.index("--output-format") + 1] == "json"
+    assert "--input-format" not in argv
+
+
+def test_stream_json_without_a_result_is_transient(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stream with no result event is reported, not silently empty."""
+    recorder: dict[str, Any] = {}
+    monkeypatch.setattr(
+        backend_module.subprocess,
+        "run",
+        _stream_run(recorder, {"type": "assistant"}),
+    )
+    with pytest.raises(LLMTransientError):
+        backend.generate(
+            prompt="p",
+            system=None,
+            model="sonnet",
+            schema=None,
+            effort="low",
+            max_tokens=10,
+            timeout_s=5.0,
+            images=[PNG_BYTES],
+        )
+
+
+def test_strip_env_removes_extra_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gateway URL exported by the calling shell does not reach the CLI."""
+    monkeypatch.setattr(backend_module.shutil, "which", lambda _: "/usr/bin/claude")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://elsewhere.invalid")
+    stripped = ClaudeCodeBackend(scratch_dir=tmp_path, strip_env=["ANTHROPIC_BASE_URL"])
+    recorder: dict[str, Any] = {}
+    _generate(stripped, monkeypatch, recorder)
+    assert "ANTHROPIC_BASE_URL" not in recorder["env"]
