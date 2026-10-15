@@ -9,17 +9,24 @@ LLM - all tools off, settings and MCP servers ignored, an empty working
 directory, and an explicit reasoning level on every call. See
 the README for why that matters.
 
+Images (PNG bytes) can be attached to a prompt. The CLI only accepts them
+through its ``stream-json`` input format, as base64 content blocks, so a call
+with images switches both input and output to ``stream-json``; a call without
+images is unchanged.
+
 Limitations, all inherent to the CLI: no ``temperature``, no ``seed``, no
 direct ``max_tokens``, and no way to disable reasoning entirely.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import shutil
 import subprocess
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -84,6 +91,60 @@ def child_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in _SESSION_ENV}
 
 
+def image_message(images: Sequence[bytes], prompt: str) -> str:
+    """Build the one stream-json user message that carries images and a prompt.
+
+    Args:
+        images: PNG images, shown to the model in order before the prompt.
+        prompt: The user prompt.
+
+    Returns:
+        One line of JSON for the CLI's stdin.
+    """
+    content: list[dict[str, Any]] = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.b64encode(png).decode(),
+            },
+        }
+        for png in images
+    ]
+    content.append({"type": "text", "text": prompt})
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}})
+
+
+def last_result_event(stdout: str) -> dict[str, Any]:
+    """Pick the final ``result`` event out of stream-json output.
+
+    Every other event (system init, assistant messages) is skipped; the result
+    event carries the same fields as ``--output-format json``.
+
+    Args:
+        stdout: The CLI's stream-json output, one JSON event per line.
+
+    Returns:
+        The last result event.
+
+    Raises:
+        json.JSONDecodeError: If no line is a result event, so the caller
+            handles it exactly like unparseable plain-json output.
+    """
+    result: dict[str, Any] | None = None
+    for line in stdout.splitlines():
+        if not line.strip().startswith("{"):
+            continue
+        event = json.loads(line)
+        if event.get("type") == "result":
+            result = event
+    if result is None:
+        msg = "no result event in stream-json output"
+        raise json.JSONDecodeError(msg, stdout, 0)
+    return result
+
+
 class ClaudeCodeBackend:
     """Runs ``claude -p`` as a subprocess and parses its JSON output."""
 
@@ -91,9 +152,14 @@ class ClaudeCodeBackend:
     #: The CLI rejects `--effort none` outright: "Valid values: low, medium,
     #: high, xhigh, max". `low` is the practical equivalent on Opus.
     supports_effort_none = False
+    #: Images can be attached through the CLI's stream-json input.
+    supports_images = True
 
     def __init__(
-        self, claude_bin: str = "claude", scratch_dir: Path | None = None
+        self,
+        claude_bin: str = "claude",
+        scratch_dir: Path | None = None,
+        strip_env: Iterable[str] = (),
     ) -> None:
         """Configure the backend.
 
@@ -102,9 +168,18 @@ class ClaudeCodeBackend:
             scratch_dir: Empty directory to run the CLI in. Defaults to
                 ``$LLM_SCRATCH_DIR``, or ``.llm_scratch`` under the current
                 working directory.
+            strip_env: Extra environment variables to remove from the CLI's
+                environment, on top of the session variables
+                :func:`child_env` always removes. Use it when the calling
+                shell exports, for example, an ``ANTHROPIC_BASE_URL`` meant
+                for a different gateway than the seat this call should use.
         """
         self.claude_bin = claude_bin
         self._scratch_dir = scratch_dir
+        # A bare string is one variable name, not an iterable of letters.
+        if isinstance(strip_env, str):
+            strip_env = (strip_env,)
+        self.strip_env = frozenset(strip_env)
 
     def _resolve_bin(self) -> str:
         """Locate the CLI on PATH.
@@ -157,6 +232,7 @@ class ClaudeCodeBackend:
         effort: Effort,
         system: str | None,
         schema: dict[str, Any] | None,
+        stream_json: bool = False,
     ) -> list[str]:
         """Assemble the command line.
 
@@ -168,6 +244,8 @@ class ClaudeCodeBackend:
             effort: Reasoning depth; never "none" here.
             system: System prompt, or None.
             schema: JSON Schema for structured output, or None.
+            stream_json: Use ``stream-json`` for input and output, which is
+                how the CLI accepts images.
 
         Returns:
             The full argv, starting with the resolved executable.
@@ -179,7 +257,13 @@ class ClaudeCodeBackend:
         argv = [self._resolve_bin(), "-p"]
         argv += ["--model", model]
         argv += ["--effort", effort]
-        argv += ["--output-format", "json"]
+        if stream_json:
+            # stream-json output requires --verbose; the final "result" event
+            # carries the same fields as the plain json format.
+            argv += ["--input-format", "stream-json"]
+            argv += ["--output-format", "stream-json", "--verbose"]
+        else:
+            argv += ["--output-format", "json"]
         argv += ["--tools", ""]  # disables ALL tools, including web search
         argv += ["--setting-sources", ""]  # ignore user/project/local settings
         argv += ["--strict-mcp-config"]  # ignore any configured MCP servers
@@ -202,6 +286,7 @@ class ClaudeCodeBackend:
         effort: Effort,
         max_tokens: int,
         timeout_s: float,
+        images: Sequence[bytes] | None = None,
     ) -> LLMResponse:
         """Run one completion through the CLI.
 
@@ -213,6 +298,7 @@ class ClaudeCodeBackend:
             effort: Reasoning depth.
             max_tokens: Ignored - the CLI has no equivalent flag.
             timeout_s: Per-call timeout in seconds.
+            images: PNG images to show the model before the prompt, or None.
 
         Returns:
             The completion.
@@ -225,26 +311,41 @@ class ClaudeCodeBackend:
         effort = validate_effort(
             effort, provider=self.name, supports_none=self.supports_effort_none
         )
-        argv = self.build_argv(model=model, effort=effort, system=system, schema=schema)
+        stream_json = bool(images)
+        argv = self.build_argv(
+            model=model,
+            effort=effort,
+            system=system,
+            schema=schema,
+            stream_json=stream_json,
+        )
+        stdin = image_message(images, prompt) + "\n" if images else prompt
+        env = {k: v for k, v in child_env().items() if k not in self.strip_env}
 
         try:
             # argv is built entirely from validated configuration above; no
             # caller data reaches it (the prompt goes to stdin).
             completed = subprocess.run(  # noqa: S603
                 argv,
-                input=prompt,
+                input=stdin,
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
                 check=False,
                 cwd=self._scratch(),
-                env=child_env(),
+                env=env,
             )
         except subprocess.TimeoutExpired as exc:
             msg = f"claude did not respond within {timeout_s}s"
             raise LLMTimeoutError(msg) from exc
 
-        return self._parse(completed, model=model, effort=effort, schema=schema)
+        return self._parse(
+            completed,
+            model=model,
+            effort=effort,
+            schema=schema,
+            stream_json=stream_json,
+        )
 
     def _parse(
         self,
@@ -253,6 +354,7 @@ class ClaudeCodeBackend:
         model: str,
         effort: Effort,
         schema: dict[str, Any] | None,
+        stream_json: bool = False,
     ) -> LLMResponse:
         """Turn the CLI's JSON output into an :class:`LLMResponse`.
 
@@ -261,6 +363,8 @@ class ClaudeCodeBackend:
             model: Model that was requested.
             effort: Effort that was requested.
             schema: Schema that was requested, or None.
+            stream_json: Whether the output is ``stream-json`` (one event per
+                line) rather than a single JSON object.
 
         Returns:
             The completion.
@@ -269,7 +373,11 @@ class ClaudeCodeBackend:
             LLMError: Or a subclass, if the CLI reported failure.
         """
         try:
-            payload: dict[str, Any] = json.loads(completed.stdout)
+            payload: dict[str, Any] = (
+                last_result_event(completed.stdout)
+                if stream_json
+                else json.loads(completed.stdout)
+            )
         except json.JSONDecodeError as exc:
             detail = (completed.stderr or completed.stdout or "").strip()[:500]
             msg = (

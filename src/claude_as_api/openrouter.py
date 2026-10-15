@@ -45,6 +45,7 @@ class OpenRouterBackend:
 
     name = "openrouter"
     supports_effort_none = True
+    supports_images = False
 
     def __init__(
         self,
