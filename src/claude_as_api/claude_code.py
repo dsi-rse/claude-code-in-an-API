@@ -176,6 +176,9 @@ class ClaudeCodeBackend:
         """
         self.claude_bin = claude_bin
         self._scratch_dir = scratch_dir
+        # A bare string is one variable name, not an iterable of letters.
+        if isinstance(strip_env, str):
+            strip_env = (strip_env,)
         self.strip_env = frozenset(strip_env)
 
     def _resolve_bin(self) -> str:

@@ -30,6 +30,7 @@ class FakeBackend:
 
     name = "fake"
     supports_effort_none = True
+    supports_images = False
 
     def __init__(
         self, *, fail_times: int = 0, delays: dict[str, float] | None = None

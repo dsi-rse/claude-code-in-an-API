@@ -38,6 +38,7 @@ class AnthropicBackend:
 
     name = "anthropic"
     supports_effort_none = True
+    supports_images = False
 
     def __init__(self, client: object | None = None) -> None:
         """Configure the backend.

@@ -6,6 +6,7 @@ CANNED below is a real ``--output-format json`` payload captured from
 
 from __future__ import annotations
 
+import base64
 import json
 import subprocess
 from pathlib import Path
@@ -430,12 +431,36 @@ def test_images_switch_to_stream_json(
     argv = recorder["argv"]
     assert argv[argv.index("--input-format") + 1] == "stream-json"
     assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv  # the CLI rejects stream-json output without it
     assert argv[argv.index("--tools") + 1] == ""
     message = json.loads(recorder["input"])
     image_block, text_block = message["message"]["content"]
     assert image_block["source"]["media_type"] == "image/png"
+    assert base64.b64decode(image_block["source"]["data"]) == PNG_BYTES
     assert text_block == {"type": "text", "text": "Transcribe the table."}
     assert response.data == CANNED["structured_output"]
+
+
+def test_multiple_images_are_sent_in_order(
+    backend: ClaudeCodeBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every image is sent, in the given order, before the prompt."""
+    recorder: dict[str, Any] = {}
+    monkeypatch.setattr(backend_module.subprocess, "run", _stream_run(recorder, CANNED))
+    images = [PNG_BYTES + b"1", PNG_BYTES + b"2"]
+    backend.generate(
+        prompt="Compare these.",
+        system=None,
+        model="sonnet",
+        schema=SCHEMA,
+        effort="low",
+        max_tokens=4096,
+        timeout_s=30.0,
+        images=images,
+    )
+    *image_blocks, text_block = json.loads(recorder["input"])["message"]["content"]
+    assert [base64.b64decode(b["source"]["data"]) for b in image_blocks] == images
+    assert text_block["text"] == "Compare these."
 
 
 def test_no_images_keeps_plain_json(backend: ClaudeCodeBackend) -> None:
@@ -478,3 +503,9 @@ def test_strip_env_removes_extra_variables(
     recorder: dict[str, Any] = {}
     _generate(stripped, monkeypatch, recorder)
     assert "ANTHROPIC_BASE_URL" not in recorder["env"]
+
+
+def test_strip_env_accepts_a_bare_string() -> None:
+    """A single variable name is not split into letters."""
+    backend = ClaudeCodeBackend(strip_env="ANTHROPIC_BASE_URL")
+    assert backend.strip_env == frozenset({"ANTHROPIC_BASE_URL"})

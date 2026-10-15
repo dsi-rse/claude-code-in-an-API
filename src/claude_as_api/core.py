@@ -112,6 +112,9 @@ class LLMBackend(Protocol):
 
     name: str
     supports_effort_none: bool
+    #: Whether ``generate`` accepts an ``images`` keyword (PNG bytes). The
+    #: client only passes ``images`` to backends that set this.
+    supports_images: bool
 
     def generate(
         self,
